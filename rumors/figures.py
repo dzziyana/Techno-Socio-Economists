@@ -513,3 +513,115 @@ def fig6_methodology_flip(
     if out_path:
         _save(fig, out_path)
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Figure 7 — Verifiability score distribution by veracity
+# ---------------------------------------------------------------------------
+
+def fig_verifiability_by_veracity(
+    tm,
+    score_col: str = "verifiability_score",
+    out_path=None,
+):
+    """
+    Overlapping histograms of P(VERIFIABLE) by veracity class.
+
+    The story: unverified and false rumours cluster toward lower verifiability
+    scores, supporting the mechanism that hard-to-check claims spread faster
+    because readers cannot easily debunk them before sharing.
+
+    Cite: Nielsen & McConville (2022) MuMiN; Thorne et al. (2018) FEVER.
+    """
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    for v in VERACITY_ORDER:
+        vals = tm[tm["veracity"] == v][score_col].dropna()
+        if len(vals) == 0:
+            continue
+        ax.hist(
+            vals, bins=40, alpha=0.55, density=True,
+            color=VERACITY_COLORS[v],
+            label=f"{VERACITY_LABELS[v]} (n={len(vals):,})",
+        )
+
+    ax.axvline(0.5, color="#888888", linewidth=1, linestyle=":", label="decision boundary")
+    ax.set_xlabel("P(verifiable) — FEVER-trained classifier", fontsize=11)
+    ax.set_ylabel("Density", fontsize=11)
+    ax.set_title(
+        "Unverified rumours are linguistically less verifiable\n"
+        "(classifier trained on FEVER, Thorne et al. 2018)",
+        fontweight="bold",
+    )
+    ax.legend(frameon=True, framealpha=0.9, fontsize=9)
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+
+    if out_path:
+        _save(fig, out_path)
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Figure 8 — Verifiability quartile vs spread speed (mechanism slide)
+# ---------------------------------------------------------------------------
+
+def fig_verifiability_speed_quartiles(
+    tm,
+    speed_col: str = "time_to_first_reply_min",
+    score_col: str = "verifiability_score",
+    out_path=None,
+):
+    """
+    Median time-to-first-reply by verifiability quartile.
+
+    The mechanism slide: Q1 (least verifiable) → fastest replies,
+    Q4 (most verifiable) → slowest. A monotonic pattern here is the
+    cleanest possible evidence for the verifiability-as-mechanism hypothesis.
+
+    Error bars show IQR (25th–75th percentile), not SE — honest for
+    heavy-tailed distributions.
+    """
+    valid = tm[tm[speed_col].notna() & (tm[speed_col] > 0) & tm[score_col].notna()].copy()
+    valid["verif_quartile"] = pd.qcut(
+        valid[score_col], q=4,
+        labels=["Q1\n(least\nverifiable)", "Q2", "Q3", "Q4\n(most\nverifiable)"],
+    )
+    grp = (
+        valid.groupby("verif_quartile", observed=True)[speed_col]
+        .agg(median="median", n="count",
+             p25=lambda x: x.quantile(0.25),
+             p75=lambda x: x.quantile(0.75))
+        .reset_index()
+    )
+
+    from scipy import stats as _stats
+    rho, p_rho = _stats.spearmanr(valid[score_col], np.log(valid[speed_col]))
+
+    palette = ["#C44E52", "#DD8452", "#55A868", "#4C72B0"]
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for i, (_, row) in enumerate(grp.iterrows()):
+        ax.bar(i, row["median"], color=palette[i],
+               edgecolor="white", linewidth=1.2, width=0.65)
+        ax.errorbar(
+            i, row["median"],
+            yerr=[[row["median"] - row["p25"]], [row["p75"] - row["median"]]],
+            fmt="none", color="#222222", capsize=6, linewidth=1.8,
+        )
+        ax.text(i, row["p75"] + 0.5, f"n={int(row['n']):,}",
+                ha="center", va="bottom", fontsize=9, color="#555555")
+
+    ax.set_xticks(range(len(grp)))
+    ax.set_xticklabels(grp["verif_quartile"].astype(str), fontsize=10)
+    ax.set_ylabel("Median time to first reply (minutes)", fontsize=11)
+    ax.set_title(
+        f"Less verifiable tweets attract faster replies\n"
+        f"Spearman ρ = {rho:.2f}, p = {p_rho:.1e}  |  bars = median, whiskers = IQR",
+        fontweight="bold",
+    )
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+
+    if out_path:
+        _save(fig, out_path)
+    return fig
