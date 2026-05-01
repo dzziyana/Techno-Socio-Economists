@@ -1,3 +1,12 @@
 # Setup
-command to run all notebooks: `cd /Users/dianaazarenok/Downloads/data_science/rumors && jupyter nbconvert --to notebook --execute --inplace 02_cascade_metrics.ipynb 03_statistical_comparison.ipynb
-  04_presentation_figures.ipynb`
+
+Run all notebooks in order (05 must precede 04 so the verifiability parquet exists):
+
+```bash
+cd ./rumors && jupyter nbconvert --to notebook --execute --inplace \
+  01_data_wrangling.ipynb \
+  02_cascade_metrics.ipynb \
+  03_statistical_comparison.ipynb \
+  05_verifiability.ipynb \
+  04_presentation_figures.ipynb
+```

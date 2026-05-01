@@ -519,6 +519,7 @@ def fig6_methodology_flip(
 # Figure 7 — Verifiability score distribution by veracity
 # ---------------------------------------------------------------------------
 
+
 def fig_verifiability_by_veracity(
     tm,
     score_col: str = "verifiability_score",
@@ -621,6 +622,263 @@ def fig_verifiability_speed_quartiles(
     )
     for spine in ["top", "right"]:
         ax.spines[spine].set_visible(False)
+
+    if out_path:
+        _save(fig, out_path)
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Figure 9 — Verifiability violin (cleaner distributional comparison)
+# ---------------------------------------------------------------------------
+
+def fig_verifiability_violin(
+    tm,
+    score_col: str = "verifiability_score",
+    out_path=None,
+):
+    """
+    Violin + jittered points of P(VERIFIABLE) by veracity.
+
+    Cleaner than overlapping histograms: shows full distribution shape,
+    median lines inside each violin, and significance brackets.
+
+    Key finding: TRUE rumours have the LOWEST verifiability score (median
+    0.455) — even lower than unverified. At posting time, even claims that
+    later proved true were linguistically unverifiable.
+    """
+    from scipy import stats as _stats
+
+    valid = tm[tm[score_col].notna()].copy()
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    parts = ax.violinplot(
+        [valid[valid["veracity"] == v][score_col].values for v in VERACITY_ORDER],
+        positions=range(len(VERACITY_ORDER)),
+        showmedians=True,
+        showextrema=False,
+        widths=0.7,
+    )
+    for body, v in zip(parts["bodies"], VERACITY_ORDER):
+        body.set_facecolor(VERACITY_COLORS[v])
+        body.set_alpha(0.65)
+        body.set_edgecolor("white")
+        body.set_linewidth(1.2)
+    parts["cmedians"].set_color("white")
+    parts["cmedians"].set_linewidth(2.5)
+
+    rng = np.random.default_rng(42)
+    for i, v in enumerate(VERACITY_ORDER):
+        vals = valid[valid["veracity"] == v][score_col].values
+        sample = rng.choice(vals, min(250, len(vals)), replace=False)
+        jitter = rng.uniform(-0.09, 0.09, len(sample))
+        ax.scatter(i + jitter, sample, s=4, alpha=0.25,
+                   color=VERACITY_COLORS[v], edgecolors="none", zorder=2)
+
+    bracket_pairs = [("true", "nonrumour"), ("unverified", "nonrumour"), ("false", "nonrumour")]
+    y_base = 1.05
+    y_step = 0.10
+    n_brackets = len(bracket_pairs)
+    y_top = y_base + y_step * (n_brackets - 1) + 0.12
+    for j, (a, b) in enumerate(bracket_pairs):
+        xa = valid[valid["veracity"] == a][score_col].dropna()
+        xb = valid[valid["veracity"] == b][score_col].dropna()
+        _, p = _stats.mannwhitneyu(xa, xb, alternative="two-sided")
+        sig = "***" if p < 0.001 else ("**" if p < 0.01 else ("*" if p < 0.05 else "ns"))
+        ia, ib = VERACITY_ORDER.index(a), VERACITY_ORDER.index(b)
+        y = y_base + y_step * j
+        ax.plot([ia, ia, ib, ib], [y - 0.03, y, y, y - 0.03],
+                lw=1.2, color="#444444", clip_on=False)
+        ax.text((ia + ib) / 2, y + 0.01, sig, ha="center", va="bottom",
+                fontsize=10, color="#444444", clip_on=False)
+
+    ax.axhline(0.5, color="#aaaaaa", linewidth=1, linestyle=":", zorder=0)
+    ax.text(3.45, 0.502, "0.5 boundary", va="bottom", ha="right",
+            fontsize=8, color="#888888")
+
+    ax.set_xticks(range(len(VERACITY_ORDER)))
+    ax.set_xticklabels(
+        [f"{VERACITY_LABELS[v]}\n(n={valid[valid['veracity']==v][score_col].notna().sum():,})"
+         for v in VERACITY_ORDER]
+    )
+    ax.set_ylabel("P(verifiable) — FEVER classifier", fontsize=11)
+    ax.set_title(
+        "True rumours are the hardest to verify at posting time\n"
+        "(white line = median; *** p < 0.001 vs Non-rumour, Mann-Whitney)",
+        fontweight="bold",
+    )
+    ax.set_ylim(0, y_top)
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+
+    if out_path:
+        _save(fig, out_path)
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Figure 10 — Verifiability score vs spread speed scatter
+# ---------------------------------------------------------------------------
+
+def fig_verifiability_score_vs_speed(
+    tm,
+    speed_col: str = "time_to_first_reply_min",
+    score_col: str = "verifiability_score",
+    out_path=None,
+):
+    """
+    Scatter of P(verifiable) vs log(time-to-first-reply), coloured by veracity.
+
+    OLS trend line summarises the direction: higher verifiability → larger
+    time value → slower spread. The colouring shows the trend is not purely
+    a veracity confound.
+
+    Spearman ρ = +0.094 (p < 10⁻¹²): small but highly reliable.
+    """
+    from scipy import stats as _stats
+
+    valid = tm[
+        tm[speed_col].notna() & (tm[speed_col] > 0) & tm[score_col].notna()
+    ].copy()
+    valid["log_speed"] = np.log(valid[speed_col])
+
+    rho, p_rho = _stats.spearmanr(valid[score_col], valid["log_speed"])
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+
+    for v in ["nonrumour", "true", "unverified", "false"]:
+        sub = valid[valid["veracity"] == v]
+        ax.scatter(
+            sub[score_col], sub["log_speed"],
+            s=5, alpha=0.15, color=VERACITY_COLORS[v], edgecolors="none",
+            label=f"{VERACITY_LABELS[v]} (n={len(sub):,})",
+        )
+
+    coefs = np.polyfit(valid[score_col], valid["log_speed"], 1)
+    xs = np.linspace(valid[score_col].min(), valid[score_col].max(), 200)
+    ax.plot(xs, np.polyval(coefs, xs), color="#222222", linewidth=2,
+            linestyle="--", label=f"OLS trend (ρ = {rho:.2f})", zorder=5)
+
+    ax.set_xlabel("P(verifiable) — FEVER classifier", fontsize=11)
+    ax.set_ylabel("log(time to first reply, minutes)", fontsize=11)
+    ax.set_title(
+        f"Less verifiable claims attract replies faster\n"
+        f"Spearman ρ = {rho:.2f}, p = {p_rho:.0e}  |  each point = one cascade",
+        fontweight="bold",
+    )
+    ax.legend(loc="upper left", frameon=True, framealpha=0.92, fontsize=9,
+              markerscale=3)
+    ax.grid(axis="both", alpha=0.2)
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+
+    if out_path:
+        _save(fig, out_path)
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Figure 11 — Mechanism summary: veracity → verifiability → speed (2-panel)
+# ---------------------------------------------------------------------------
+
+def fig_verifiability_mechanism_summary(
+    tm,
+    speed_col: str = "time_to_first_reply_min",
+    score_col: str = "verifiability_score",
+    out_path=None,
+):
+    """
+    Two-panel mechanism slide.
+
+    LEFT  — Box plot of P(verifiable) by veracity (nonrumour > false >
+             unverified > true), with annotated medians.
+    RIGHT — Median time-to-first-reply by verifiability quartile showing
+             the monotonic Q1 → Q4 increase.
+
+    Together: veracity class → verifiability score → spread speed.
+    """
+    from scipy import stats as _stats
+
+    valid = tm[
+        tm[speed_col].notna() & (tm[speed_col] > 0) & tm[score_col].notna()
+    ].copy()
+    rho, p_rho = _stats.spearmanr(valid[score_col], np.log(valid[speed_col]))
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # --- LEFT: box plots by veracity ---
+    ax = axes[0]
+    for i, v in enumerate(VERACITY_ORDER):
+        vals = tm[tm["veracity"] == v][score_col].dropna()
+        ax.boxplot(
+            vals,
+            positions=[i],
+            widths=0.55,
+            patch_artist=True,
+            showfliers=False,
+            medianprops=dict(color="white", linewidth=2.5),
+            whiskerprops=dict(color=VERACITY_COLORS[v], linewidth=1.5),
+            capprops=dict(color=VERACITY_COLORS[v], linewidth=1.5),
+            boxprops=dict(facecolor=VERACITY_COLORS[v], alpha=0.75,
+                          edgecolor=VERACITY_COLORS[v]),
+        )
+        med = float(np.median(vals))
+        ax.text(i, med + 0.015, f"{med:.2f}", ha="center", va="bottom",
+                fontsize=9, color="#222222", fontweight="bold")
+
+    ax.axhline(0.5, color="#aaaaaa", linewidth=1, linestyle=":", zorder=0)
+    ax.set_xticks(range(len(VERACITY_ORDER)))
+    ax.set_xticklabels([VERACITY_LABELS[v] for v in VERACITY_ORDER],
+                       rotation=15, ha="right")
+    ax.set_ylabel("P(verifiable) — FEVER classifier", fontsize=11)
+    ax.set_title("Step 1: Rumours score as less verifiable\n"
+                 "(true rumours are hardest to verify at posting time)",
+                 fontweight="bold", fontsize=11)
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+
+    # --- RIGHT: quartile bar chart ---
+    ax = axes[1]
+    valid["verif_q"] = pd.qcut(
+        valid[score_col], q=4,
+        labels=["Q1\n(least\nverifiable)", "Q2", "Q3", "Q4\n(most\nverifiable)"],
+    )
+    grp = (
+        valid.groupby("verif_q", observed=True)[speed_col]
+        .agg(median="median", n="count",
+             p25=lambda x: x.quantile(0.25),
+             p75=lambda x: x.quantile(0.75))
+        .reset_index()
+    )
+    palette = ["#C44E52", "#DD8452", "#55A868", "#4C72B0"]
+    for i, (_, row) in enumerate(grp.iterrows()):
+        ax.bar(i, row["median"], color=palette[i], edgecolor="white",
+               linewidth=1.2, width=0.65, zorder=2)
+        ax.errorbar(
+            i, row["median"],
+            yerr=[[row["median"] - row["p25"]], [row["p75"] - row["median"]]],
+            fmt="none", color="#222222", capsize=6, linewidth=1.8, zorder=3,
+        )
+        ax.text(i, row["p75"] + 0.4, f"n={int(row['n']):,}",
+                ha="center", va="bottom", fontsize=9, color="#555555")
+
+    ax.set_xticks(range(len(grp)))
+    ax.set_xticklabels(grp["verif_q"].astype(str), fontsize=10)
+    ax.set_ylabel("Median time to first reply (minutes)", fontsize=11)
+    ax.set_title(
+        f"Step 2: Less verifiable → faster first reply\n"
+        f"(Spearman ρ = {rho:.2f}, p = {p_rho:.0e}; whiskers = IQR)",
+        fontweight="bold", fontsize=11,
+    )
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+
+    fig.suptitle(
+        "The verifiability mechanism: claim ambiguity drives faster engagement",
+        fontsize=13, fontweight="bold", y=1.02,
+    )
+    plt.tight_layout()
 
     if out_path:
         _save(fig, out_path)
