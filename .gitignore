@@ -13,6 +13,7 @@ build/
 
 # Data — do not commit large raw or processed files
 data/all-rnr-annotated-threads/
+rumors/all-rnr-annotated-threads/
 data/processed/*.parquet
 data/processed/*.pkl
 
