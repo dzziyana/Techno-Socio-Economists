@@ -364,6 +364,90 @@ def fig5_structure_null(
 # Figure 6 — Methodology: pooled vs. stratified
 # ---------------------------------------------------------------------------
 
+def fig_per_event_medians_ci(
+    medians_df: pd.DataFrame,
+    metric: str,
+    veracity_classes: list | None = None,
+    min_n: int = 10,
+    out_path: Path | None = None,
+):
+    """
+    Per-event panel: median ± 95% bootstrap CI for each veracity class.
+
+    medians_df is the output of per_event_medians_with_ci() from
+    stats_comparison.py. Each event gets its own subplot; within each
+    subplot, one dot + error bar per veracity class with enough data.
+
+    This figure is the companion to fig3_velocity_consistency — it shows
+    the *magnitude* of the per-event differences, not just the direction.
+    Use it as a supplementary slide or in the report.
+
+    min_n: minimum observations per (event, veracity) cell to plot.
+    """
+    veracity_classes = veracity_classes or VERACITY_ORDER
+    sub = medians_df[
+        (medians_df["metric"] == metric) &
+        (medians_df["n"] >= min_n) &
+        (medians_df["veracity"].isin(veracity_classes))
+    ].copy()
+
+    events = sorted(sub["event"].unique())
+    if not events:
+        raise ValueError(f"No events with n >= {min_n} for metric='{metric}'")
+
+    ncols = min(3, len(events))
+    nrows = (len(events) + ncols - 1) // ncols
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(5 * ncols, 4 * nrows),
+        sharey=False,
+    )
+    axes_flat = np.array(axes).flatten() if len(events) > 1 else [axes]
+
+    for ax, event in zip(axes_flat, events):
+        ev = sub[sub["event"] == event]
+        for i, v in enumerate(veracity_classes):
+            row = ev[ev["veracity"] == v]
+            if len(row) == 0:
+                continue
+            r = row.iloc[0]
+            ax.errorbar(
+                x=i,
+                y=r["median"],
+                yerr=[[r["median"] - r["ci_low"]], [r["ci_high"] - r["median"]]],
+                fmt="o",
+                color=VERACITY_COLORS[v],
+                capsize=5,
+                ms=8,
+                linewidth=1.5,
+                label=VERACITY_LABELS[v],
+            )
+
+        ax.set_title(event, fontsize=10, fontweight="bold")
+        ax.set_xticks(range(len(veracity_classes)))
+        ax.set_xticklabels(
+            [VERACITY_LABELS[v] for v in veracity_classes],
+            rotation=25, ha="right", fontsize=8,
+        )
+        ax.set_ylabel(metric.replace("_", " "), fontsize=8)
+        ax.grid(True, axis="y", alpha=0.3)
+        for spine in ["top", "right"]:
+            ax.spines[spine].set_visible(False)
+
+    for ax in axes_flat[len(events):]:
+        ax.axis("off")
+
+    fig.suptitle(
+        f"{metric.replace('_', ' ').title()} — median ± 95% CI by event",
+        fontsize=13, fontweight="bold",
+    )
+    plt.tight_layout()
+
+    if out_path:
+        _save(fig, out_path)
+    return fig
+
+
 def fig6_methodology_flip(
     tm: pd.DataFrame,
     out_path: Path | None = None,

@@ -219,6 +219,57 @@ def van_elteren_test(
 
 
 # ---------------------------------------------------------------------------
+# Multiple testing correction
+# ---------------------------------------------------------------------------
+
+def bh_correction(
+    per_event_df: pd.DataFrame,
+    alpha: float = 0.05,
+) -> pd.DataFrame:
+    """
+    Apply Benjamini-Hochberg FDR correction to eligible rows of a
+    per_event_pairwise result dataframe. Adds two columns:
+      p_value_adj:    BH-adjusted p-value (NaN for ineligible rows)
+      significant_bh: bool, whether p_value_adj < alpha
+
+    WHY THIS MATTERS
+    Running per_event_pairwise over 11 metrics × 5 pairs × 9 events
+    produces up to 495 simultaneous tests. At α=0.05, roughly 25 would
+    be false positives by chance alone. BH controls the *expected
+    proportion* of false discoveries (the false discovery rate) rather
+    than the family-wise error rate — appropriate here because we are
+    doing exploratory analysis, not confirming a single hypothesis.
+
+    Use this as a final filter before constructing the consistency table:
+        results_corrected = bh_correction(stats_per_event)
+        consistency = consistency_score(results_corrected, use_adjusted_p=True)
+    """
+    df = per_event_df.copy()
+    eligible_mask = df["eligible"] & df["p_value"].notna()
+    df["p_value_adj"] = np.nan
+    df["significant_bh"] = False
+
+    if eligible_mask.sum() == 0:
+        return df
+
+    p_vals = df.loc[eligible_mask, "p_value"].values
+    n = len(p_vals)
+    order = np.argsort(p_vals)
+    ranks = np.empty(n, dtype=float)
+    ranks[order] = np.arange(1, n + 1)
+
+    # BH step-up: adjusted p = min(p_i * n / rank_i, 1.0)
+    # Enforce monotonicity by scanning from largest to smallest rank.
+    adj = np.minimum(p_vals * n / ranks, 1.0)
+    for i in range(n - 2, -1, -1):
+        adj[order[i]] = min(adj[order[i]], adj[order[i + 1]])
+
+    df.loc[eligible_mask, "p_value_adj"] = adj
+    df["significant_bh"] = df["p_value_adj"] < alpha
+    return df
+
+
+# ---------------------------------------------------------------------------
 # Consistency scoring
 # ---------------------------------------------------------------------------
 
@@ -226,6 +277,7 @@ def consistency_score(
     per_event_df: pd.DataFrame,
     direction: str = "a_greater",
     alpha: float = 0.05,
+    use_adjusted_p: bool = False,
 ) -> pd.DataFrame:
     """
     Given the output of per_event_pairwise, summarize per (metric, pair):
@@ -239,12 +291,22 @@ def consistency_score(
     `direction='a_greater'` ranks results by how often A > B (the typical
     presentation framing). Pass 'b_greater' to flip.
 
+    use_adjusted_p:
+      If True, use the `p_value_adj` column (BH-corrected) instead of
+      raw p-values. Requires that bh_correction() has been called on
+      per_event_df first. Recommended for the final presentation table.
+
     Why this matters for the presentation: a finding of "delta = 0.15,
     p < 0.001" sounds strong but is hard to defend. A finding of
     "unverified > nonrumour in 5 of 5 eligible events, all with p<0.01,
     median delta = 0.18" is much harder to argue with. Consistency is
     the killer slide format.
     """
+    p_col = (
+        "p_value_adj"
+        if use_adjusted_p and "p_value_adj" in per_event_df.columns
+        else "p_value"
+    )
     rows = []
     for (metric, a, b), grp in per_event_df.groupby(["metric", "group_a", "group_b"]):
         elig = grp[grp["eligible"]]
@@ -257,7 +319,7 @@ def consistency_score(
                 "consistency_b_gt_a": np.nan, "median_delta": np.nan,
             })
             continue
-        sig = elig[elig["p_value"] < alpha]
+        sig = elig[elig[p_col] < alpha]
         n_a_greater = ((sig["median_a"] > sig["median_b"])).sum()
         n_b_greater = ((sig["median_b"] > sig["median_a"])).sum()
         rows.append({

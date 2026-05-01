@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Data — do not commit large raw or processed files
+data/all-rnr-annotated-threads/
+data/processed/*.parquet
+data/processed/*.pkl
+
+# Figures — generated, not source
+figures/*.png
+figures/*.pdf
+rumors/figures/*.png
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Old versioned files — use git instead
+rumors/pheme_loader_old*.py
+rumors/*~$*
+
+# OS
+.DS_Store
+Thumbs.db

@@ -51,11 +51,16 @@ def build_thread_tree(thread_id: str, edges_df: pd.DataFrame) -> nx.DiGraph:
     Build the reply tree for one thread as a directed graph (parent -> child).
     Returns an empty DiGraph if the thread has no edges (source-only thread).
     """
-    g = nx.DiGraph()
     sub = edges_df[edges_df["thread_id"] == thread_id]
-    g.add_node(thread_id)  # ensure root is present even with 0 edges
-    for _, row in sub.iterrows():
-        g.add_edge(row["parent_id"], row["child_id"])
+    if len(sub) == 0:
+        g = nx.DiGraph()
+        g.add_node(thread_id)
+        return g
+    g = nx.from_pandas_edgelist(
+        sub, source="parent_id", target="child_id", create_using=nx.DiGraph()
+    )
+    if thread_id not in g:
+        g.add_node(thread_id)
     return g
 
 
@@ -108,7 +113,11 @@ def reach_metrics(tree: nx.DiGraph, root: str, tweets_subset: pd.DataFrame) -> d
 # Speed metrics
 # ---------------------------------------------------------------------------
 
-def speed_metrics(tweets_subset: pd.DataFrame, source_time: pd.Timestamp) -> dict:
+def speed_metrics(
+    tweets_subset: pd.DataFrame,
+    source_time: pd.Timestamp,
+    min_delta_min: float = 0.0,
+) -> dict:
     """
     Speed metrics. Computed only on tweets we have timestamps for.
 
@@ -128,6 +137,14 @@ def speed_metrics(tweets_subset: pd.DataFrame, source_time: pd.Timestamp) -> dic
     tweets_with_timestamps:
       How many tweets in the subset have parseable timestamps. Useful
       for filtering low-coverage threads downstream.
+
+    min_delta_min:
+      Minimum reply delta (minutes) to include. Default 0.0 keeps
+      same-second replies. Set to a small positive value (e.g. 1/60)
+      to exclude replies with identical timestamps to the source tweet,
+      which occur heavily in the ferguson event due to a data artefact
+      (source JSON duplicated in reactions/ for ~88% of threads, see
+      notebook Phase 2 cell 20 for details).
     """
     if pd.isna(source_time) or len(tweets_subset) <= 1:
         return {
@@ -150,8 +167,8 @@ def speed_metrics(tweets_subset: pd.DataFrame, source_time: pd.Timestamp) -> dic
 
     deltas_min = (replies["created_at"] - source_time).dt.total_seconds() / 60.0
     deltas_min = deltas_min.sort_values()
-    # Drop replies with timestamps BEFORE the source (clock skew, rare)
-    deltas_min = deltas_min[deltas_min >= 0]
+    # Drop replies that arrive before (clock skew) or within min_delta_min of source
+    deltas_min = deltas_min[deltas_min >= min_delta_min]
 
     if len(deltas_min) == 0:
         return {
@@ -258,10 +275,15 @@ def compute_all_metrics(
     tweets_df: pd.DataFrame,
     edges_df: pd.DataFrame,
     progress_every: int = 500,
+    min_delta_min: float = 0.0,
 ) -> pd.DataFrame:
     """
     Compute all metrics for every thread. Returns a dataframe keyed by
     thread_id, with columns covering reach + speed + structure.
+
+    min_delta_min:
+      Passed to speed_metrics. Set to a small positive value (e.g. 1/60)
+      to exclude same-second replies, which are artefacts in ferguson.
     """
     # Pre-group for speed: building per-thread sub-dataframes once is much
     # faster than filtering inside the loop on every call.
@@ -275,13 +297,20 @@ def compute_all_metrics(
         sub_edges = edges_by_thread.get(thread_id, edges_df.iloc[0:0])
         sub_tweets = tweets_by_thread.get(thread_id, tweets_df.iloc[0:0])
 
-        tree = nx.DiGraph()
-        tree.add_node(thread_id)
-        for _, e in sub_edges.iterrows():
-            tree.add_edge(e["parent_id"], e["child_id"])
+        # Build tree with from_pandas_edgelist (faster than iterrows)
+        if len(sub_edges):
+            tree = nx.from_pandas_edgelist(
+                sub_edges, source="parent_id", target="child_id",
+                create_using=nx.DiGraph(),
+            )
+            if thread_id not in tree:
+                tree.add_node(thread_id)
+        else:
+            tree = nx.DiGraph()
+            tree.add_node(thread_id)
 
         reach = reach_metrics(tree, thread_id, sub_tweets)
-        speed = speed_metrics(sub_tweets, t["source_created_at"])
+        speed = speed_metrics(sub_tweets, t["source_created_at"], min_delta_min=min_delta_min)
         struct = structure_metrics(tree, thread_id)
 
         rows.append({"thread_id": thread_id, **reach, **speed, **struct})
